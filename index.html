@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>LSF Stable</title>
+    
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/holistic/holistic.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+
+    <style>
+        body { 
+            margin: 0; padding: 0; overflow: hidden; background-color: #000;
+            width: 100vw; height: 100vh; font-family: sans-serif;
+            display: flex; justify-content: center; align-items: center;
+        }
+
+        /* PLEIN ÉCRAN FLUIDE */
+        canvas {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            object-fit: cover; transform: rotateY(180deg); z-index: 1;
+        }
+
+        /* TEXTE FLOTTANT */
+        .hud-container {
+            position: absolute; bottom: 15%; width: 100%;
+            z-index: 10; display: flex; justify-content: center; pointer-events: none;
+        }
+
+        .word-bubble {
+            background: rgba(0, 0, 0, 0.6); backdrop-filter: blur(5px);
+            padding: 15px 40px; border-radius: 50px;
+            border: 2px solid #3b82f6; transition: all 0.2s;
+        }
+
+        .detected-word {
+            color: white; font-size: 2rem; font-weight: 800;
+            text-transform: uppercase; margin: 0;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.8);
+        }
+
+        /* BOITE D'ERREUR / CHARGEMENT */
+        .status-box {
+            position: absolute; z-index: 20; top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(20, 20, 20, 0.95); color: white;
+            padding: 25px; border-radius: 15px; text-align: center;
+            border: 1px solid #444; max-width: 80%;
+        }
+
+        button {
+            margin-top: 15px; padding: 12px 25px;
+            background: #ef4444; border: none; color: white;
+            border-radius: 8px; font-weight: bold; font-size: 1rem;
+        }
+        
+        video { display: none; }
+    </style>
+</head>
+<body>
+
+    <div class="status-box" id="status">
+        <div id="msg">Démarrage du système...</div>
+        <button id="retry-btn" style="display:none" onclick="location.reload()">Réessayer</button>
+    </div>
+
+    <video id="webcam" playsinline muted autoplay></video>
+    <canvas id="output_canvas"></canvas>
+
+    <div class="hud-container">
+        <div class="word-bubble" id="bubble">
+            <h1 class="detected-word" id="word-out">...</h1>
+        </div>
+    </div>
+
+    <script>
+        const video = document.getElementById('webcam');
+        const canvas = document.getElementById('output_canvas');
+        const ctx = canvas.getContext('2d');
+        const wordOut = document.getElementById('word-out');
+        const statusBox = document.getElementById('status');
+        const msg = document.getElementById('msg');
+        const retryBtn = document.getElementById('retry-btn');
+        const bubble = document.getElementById('bubble');
+
+        let lastDetected = "";
+        let detectionStart = 0;
+        const HOLD_TIME = 800; 
+
+        // 1. CONFIGURATION "LÉGÈRE" (Pour éviter le crash)
+        const holistic = new Holistic({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/holistic/${file}`
+        });
+
+        holistic.setOptions({
+            modelComplexity: 0,       // 0 = Le plus léger possible
+            smoothLandmarks: false,   // Moins de calculs
+            enableSegmentation: false,
+            refineFaceLandmarks: false,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+
+        holistic.onResults(onResults);
+
+        // 2. DESSIN & ANALYSE
+        function onResults(results) {
+            statusBox.style.display = 'none'; // Cacher le chargement
+
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            
+            ctx.save();
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
+
+            // Dessin Squelette (Simplifié)
+            if(results.poseLandmarks) drawConnectors(ctx, results.poseLandmarks, POSE_CONNECTIONS, {color: 'rgba(255,255,255,0.2)', lineWidth: 1});
+            if(results.rightHandLandmarks) drawConnectors(ctx, results.rightHandLandmarks, HAND_CONNECTIONS, {color: '#3b82f6', lineWidth: 2});
+            if(results.leftHandLandmarks) drawConnectors(ctx, results.leftHandLandmarks, HAND_CONNECTIONS, {color: '#3b82f6', lineWidth: 2});
+
+            let word = analyze(results);
+            display(word);
+            ctx.restore();
+        }
+
+        // 3. LOGIQUE DES GESTES
+        function analyze(res) {
+            const hand = res.rightHandLandmarks || res.leftHandLandmarks;
+            const pose = res.poseLandmarks;
+            if (!hand || !pose) return null;
+
+            const nose = pose[0]; 
+            const chestX = (pose[11].x + pose[12].x) / 2;
+            const chestY = (pose[11].y + pose[12].y) / 2;
+            const indexTip = hand[8];
+            const wrist = hand[0];
+
+            let fingersUp = 0;
+            if (hand[8].y < hand[6].y) fingersUp++;
+            if (hand[12].y < hand[10].y) fingersUp++;
+            if (hand[16].y < hand[14].y) fingersUp++;
+            if (hand[20].y < hand[18].y) fingersUp++;
+
+            const distHead = Math.hypot(indexTip.x - nose.x, indexTip.y - nose.y);
+            const distChest = Math.hypot(wrist.x - chestX, wrist.y - chestY);
+
+            // RÈGLES
+            if (distHead < 0.18 && fingersUp <= 2) return "MANGER 🍎";
+            if (distHead < 0.20 && fingersUp >= 3) return "BONJOUR 👋";
+            if (distChest < 0.25 && fingersUp <= 1) return "DÉSOLÉ 🙏"; // Tolérant
+            
+            const isPointing = (hand[8].y < hand[6].y) && (hand[12].y > hand[10].y);
+            if (distChest < 0.25 && isPointing) return "MOI 👤";
+
+            return null;
+        }
+
+        function display(word) {
+            if (!word) {
+                if(Date.now() - detectionStart > 500) {
+                    wordOut.innerText = "...";
+                    bubble.style.borderColor = "#3b82f6";
+                }
+                return;
+            }
+
+            if (word === lastDetected) {
+                const dur = Date.now() - detectionStart;
+                wordOut.innerText = word;
+                if (dur > HOLD_TIME) {
+                    bubble.style.borderColor = "#10b981"; // Vert
+                    if (navigator.vibrate) navigator.vibrate(50);
+                }
+            } else {
+                lastDetected = word;
+                detectionStart = Date.now();
+                wordOut.innerText = word;
+                bubble.style.borderColor = "#3b82f6"; // Bleu
+            }
+        }
+
+        // 4. CAMÉRA ROBUSTE (SAFE MODE)
+        async function startCamera() {
+            try {
+                // On demande simplement "user" sans imposer de taille stricte
+                // pour éviter le NotReadableError
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: "user" }
+                });
+                
+                video.srcObject = stream;
+                video.onloadedmetadata = () => {
+                    video.play();
+                    // On lance la prédiction
+                    requestAnimationFrame(predictLoop);
+                };
+            } catch (err) {
+                console.error(err);
+                msg.innerText = "ERREUR CAMÉRA :\n" + err.name;
+                
+                if (err.name === 'NotReadableError') {
+                    msg.innerText += "\n\n⚠️ Une autre app utilise déjà la caméra (Snapchat ? Instagram ?). Fermez-les tous.";
+                } else if (err.name === 'NotAllowedError') {
+                    msg.innerText += "\n\n⚠️ Vous avez refusé l'accès caméra.";
+                }
+                
+                retryBtn.style.display = "inline-block";
+            }
+        }
+
+        // 5. BOUCLE ANTI-LAG (THROTTLING)
+        let lastTime = 0;
+        async function predictLoop(time) {
+            // On limite à 15 FPS (Images par seconde) pour ne pas tuer le téléphone
+            // On traite une image toutes les 70ms environ
+            if (time - lastTime > 70) {
+                await holistic.send({image: video});
+                lastTime = time;
+            }
+            requestAnimationFrame(predictLoop);
+        }
+
+        startCamera();
+    </script>
+</body>
+</html>
