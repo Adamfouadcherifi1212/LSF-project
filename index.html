@@ -3,9 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>LSF Stable</title>
+    <title>LSF Turbo Mode</title>
     
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/holistic/holistic.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
 
     <style>
@@ -15,43 +15,40 @@
             display: flex; justify-content: center; align-items: center;
         }
 
-        /* PLEIN ÉCRAN FLUIDE */
+        /* PLEIN ÉCRAN TOTAL */
         canvas {
             position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-            object-fit: cover; transform: rotateY(180deg); z-index: 1;
+            object-fit: cover; /* Remplit l'écran */
+            transform: rotateY(180deg); z-index: 1;
         }
 
         /* TEXTE FLOTTANT */
         .hud-container {
-            position: absolute; bottom: 15%; width: 100%;
-            z-index: 10; display: flex; justify-content: center; pointer-events: none;
+            position: absolute; bottom: 20%; width: 100%;
+            z-index: 10; display: flex; flex-direction: column; align-items: center; 
+            pointer-events: none;
         }
 
         .word-bubble {
-            background: rgba(0, 0, 0, 0.6); backdrop-filter: blur(5px);
-            padding: 15px 40px; border-radius: 50px;
+            background: rgba(0, 0, 0, 0.7); backdrop-filter: blur(5px);
+            padding: 10px 40px; border-radius: 50px;
             border: 2px solid #3b82f6; transition: all 0.2s;
         }
 
         .detected-word {
-            color: white; font-size: 2rem; font-weight: 800;
+            color: white; font-size: 2.5rem; font-weight: 800;
             text-transform: uppercase; margin: 0;
             text-shadow: 0 2px 4px rgba(0,0,0,0.8);
         }
 
-        /* BOITE D'ERREUR / CHARGEMENT */
-        .status-box {
-            position: absolute; z-index: 20; top: 50%; left: 50%;
-            transform: translate(-50%, -50%);
-            background: rgba(20, 20, 20, 0.95); color: white;
-            padding: 25px; border-radius: 15px; text-align: center;
-            border: 1px solid #444; max-width: 80%;
+        .debug-fps {
+            position: absolute; top: 10px; left: 10px; color: lime; z-index: 20; font-size: 12px;
         }
 
-        button {
-            margin-top: 15px; padding: 12px 25px;
-            background: #ef4444; border: none; color: white;
-            border-radius: 8px; font-weight: bold; font-size: 1rem;
+        .loader {
+            position: absolute; z-index: 30; background: #000; color: #fff;
+            padding: 20px; border-radius: 10px; border: 1px solid #333;
+            top: 50%; left: 50%; transform: translate(-50%, -50%);
         }
         
         video { display: none; }
@@ -59,10 +56,8 @@
 </head>
 <body>
 
-    <div class="status-box" id="status">
-        <div id="msg">Démarrage du système...</div>
-        <button id="retry-btn" style="display:none" onclick="location.reload()">Réessayer</button>
-    </div>
+    <div class="loader" id="loader">Démarrage Mode Turbo...</div>
+    <div class="debug-fps" id="fps">FPS: 0</div>
 
     <video id="webcam" playsinline muted autoplay></video>
     <canvas id="output_canvas"></canvas>
@@ -78,34 +73,38 @@
         const canvas = document.getElementById('output_canvas');
         const ctx = canvas.getContext('2d');
         const wordOut = document.getElementById('word-out');
-        const statusBox = document.getElementById('status');
-        const msg = document.getElementById('msg');
-        const retryBtn = document.getElementById('retry-btn');
+        const loader = document.getElementById('loader');
         const bubble = document.getElementById('bubble');
+        const fpsText = document.getElementById('fps');
 
         let lastDetected = "";
         let detectionStart = 0;
-        const HOLD_TIME = 800; 
+        let lastFrameTime = 0;
+        const HOLD_TIME = 600; 
 
-        // 1. CONFIGURATION "LÉGÈRE" (Pour éviter le crash)
-        const holistic = new Holistic({
-            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/holistic/${file}`
+        // 1. CONFIGURATION ULTRA LÉGÈRE (HANDS ONLY)
+        const hands = new Hands({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
         });
 
-        holistic.setOptions({
-            modelComplexity: 0,       // 0 = Le plus léger possible
-            smoothLandmarks: false,   // Moins de calculs
-            enableSegmentation: false,
-            refineFaceLandmarks: false,
+        hands.setOptions({
+            maxNumHands: 1,           // Une seule main (plus rapide)
+            modelComplexity: 0,       // 0 = Vitesse maximale
             minDetectionConfidence: 0.5,
             minTrackingConfidence: 0.5
         });
 
-        holistic.onResults(onResults);
+        hands.onResults(onResults);
 
-        // 2. DESSIN & ANALYSE
+        // 2. RENDU
         function onResults(results) {
-            statusBox.style.display = 'none'; // Cacher le chargement
+            loader.style.display = 'none';
+            
+            // Calcul FPS
+            const now = Date.now();
+            const fps = 1000 / (now - lastFrameTime);
+            lastFrameTime = now;
+            fpsText.innerText = `FPS: ${Math.round(fps)}`;
 
             canvas.width = video.videoWidth;
             canvas.height = video.videoHeight;
@@ -114,51 +113,66 @@
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
 
-            // Dessin Squelette (Simplifié)
-            if(results.poseLandmarks) drawConnectors(ctx, results.poseLandmarks, POSE_CONNECTIONS, {color: 'rgba(255,255,255,0.2)', lineWidth: 1});
-            if(results.rightHandLandmarks) drawConnectors(ctx, results.rightHandLandmarks, HAND_CONNECTIONS, {color: '#3b82f6', lineWidth: 2});
-            if(results.leftHandLandmarks) drawConnectors(ctx, results.leftHandLandmarks, HAND_CONNECTIONS, {color: '#3b82f6', lineWidth: 2});
-
-            let word = analyze(results);
-            display(word);
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const lm = results.multiHandLandmarks[0];
+                drawConnectors(ctx, lm, HAND_CONNECTIONS, {color: '#3b82f6', lineWidth: 3});
+                drawLandmarks(ctx, lm, {color: 'white', lineWidth: 1, radius: 2});
+                
+                let word = analyze(lm);
+                display(word);
+            } else {
+                display(""); // Pas de main
+            }
             ctx.restore();
         }
 
-        // 3. LOGIQUE DES GESTES
-        function analyze(res) {
-            const hand = res.rightHandLandmarks || res.leftHandLandmarks;
-            const pose = res.poseLandmarks;
-            if (!hand || !pose) return null;
+        // 3. LOGIQUE SIMPLIFIÉE (ZONES D'ÉCRAN)
+        function analyze(lm) {
+            // lm[8] = Bout de l'index
+            // lm[0] = Poignet
+            // Les coordonnées Y vont de 0 (Haut) à 1 (Bas)
 
-            const nose = pose[0]; 
-            const chestX = (pose[11].x + pose[12].x) / 2;
-            const chestY = (pose[11].y + pose[12].y) / 2;
-            const indexTip = hand[8];
-            const wrist = hand[0];
+            const yPos = lm[8].y; // Hauteur de la main
+            const fingers = countFingers(lm);
 
-            let fingersUp = 0;
-            if (hand[8].y < hand[6].y) fingersUp++;
-            if (hand[12].y < hand[10].y) fingersUp++;
-            if (hand[16].y < hand[14].y) fingersUp++;
-            if (hand[20].y < hand[18].y) fingersUp++;
+            // --- RÈGLES BASÉES SUR LA HAUTEUR ---
 
-            const distHead = Math.hypot(indexTip.x - nose.x, indexTip.y - nose.y);
-            const distChest = Math.hypot(wrist.x - chestX, wrist.y - chestY);
+            // ZONE HAUTE (Y < 0.45) -> VISAGE (Bonjour / Manger)
+            if (yPos < 0.45) {
+                // Si main ouverte (>= 3 doigts) -> BONJOUR
+                if (fingers >= 3) return "BONJOUR 👋";
+                
+                // Si main fermée/pince (<= 2 doigts) -> MANGER
+                // On ajoute une vérif que le pouce est proche de l'index pour la "pince"
+                if (fingers <= 2) return "MANGER 🍎";
+            }
 
-            // RÈGLES
-            if (distHead < 0.18 && fingersUp <= 2) return "MANGER 🍎";
-            if (distHead < 0.20 && fingersUp >= 3) return "BONJOUR 👋";
-            if (distChest < 0.25 && fingersUp <= 1) return "DÉSOLÉ 🙏"; // Tolérant
-            
-            const isPointing = (hand[8].y < hand[6].y) && (hand[12].y > hand[10].y);
-            if (distChest < 0.25 && isPointing) return "MOI 👤";
+            // ZONE BASSE (Y > 0.55) -> TORSE (Moi / Désolé)
+            else if (yPos > 0.55) {
+                // Si index levé (Pointé) -> MOI
+                // On vérifie que l'index est le doigt le plus haut
+                if (lm[8].y < lm[6].y && lm[12].y > lm[10].y) return "MOI 👤";
+
+                // Si poing fermé (0 ou 1 doigt) -> DÉSOLÉ
+                if (fingers <= 1) return "DÉSOLÉ 🙏";
+            }
 
             return null;
         }
 
+        function countFingers(lm) {
+            let count = 0;
+            // Index, Majeur, Annulaire, Auriculaire (Si le bout est plus haut que la base)
+            if (lm[8].y < lm[6].y) count++;
+            if (lm[12].y < lm[10].y) count++;
+            if (lm[16].y < lm[14].y) count++;
+            if (lm[20].y < lm[18].y) count++;
+            return count;
+        }
+
         function display(word) {
             if (!word) {
-                if(Date.now() - detectionStart > 500) {
+                if(Date.now() - detectionStart > 300) {
                     wordOut.innerText = "...";
                     bubble.style.borderColor = "#3b82f6";
                 }
@@ -180,45 +194,39 @@
             }
         }
 
-        // 4. CAMÉRA ROBUSTE (SAFE MODE)
+        // 4. CAMERA BASSE RÉSOLUTION (Le secret de la fluidité)
         async function startCamera() {
             try {
-                // On demande simplement "user" sans imposer de taille stricte
-                // pour éviter le NotReadableError
+                // On demande du 320x240. C'est petit, donc ultra rapide à calculer.
+                // Le CSS (object-fit: cover) l'agrandira pour remplir l'écran.
                 const stream = await navigator.mediaDevices.getUserMedia({
-                    video: { facingMode: "user" }
+                    video: { 
+                        facingMode: "user",
+                        width: { ideal: 320 }, 
+                        height: { ideal: 240 },
+                        frameRate: { ideal: 30 }
+                    }
                 });
-                
                 video.srcObject = stream;
                 video.onloadedmetadata = () => {
                     video.play();
-                    // On lance la prédiction
-                    requestAnimationFrame(predictLoop);
+                    loop();
                 };
             } catch (err) {
-                console.error(err);
-                msg.innerText = "ERREUR CAMÉRA :\n" + err.name;
-                
-                if (err.name === 'NotReadableError') {
-                    msg.innerText += "\n\n⚠️ Une autre app utilise déjà la caméra (Snapchat ? Instagram ?). Fermez-les tous.";
-                } else if (err.name === 'NotAllowedError') {
-                    msg.innerText += "\n\n⚠️ Vous avez refusé l'accès caméra.";
-                }
-                
-                retryBtn.style.display = "inline-block";
+                alert("Erreur Caméra: " + err.name);
             }
         }
 
-        // 5. BOUCLE ANTI-LAG (THROTTLING)
-        let lastTime = 0;
-        async function predictLoop(time) {
-            // On limite à 15 FPS (Images par seconde) pour ne pas tuer le téléphone
-            // On traite une image toutes les 70ms environ
-            if (time - lastTime > 70) {
-                await holistic.send({image: video});
-                lastTime = time;
+        // Boucle avec contrôle de vitesse (Si ça chauffe trop)
+        let lastRun = 0;
+        async function loop() {
+            const now = Date.now();
+            // Limite à 20 analyses par seconde max pour laisser respirer le téléphone
+            if (now - lastRun > 50) { 
+                await hands.send({image: video});
+                lastRun = now;
             }
-            requestAnimationFrame(predictLoop);
+            requestAnimationFrame(loop);
         }
 
         startCamera();
